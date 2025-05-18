@@ -1,68 +1,89 @@
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, request, jsonify, render_template
 import pandas as pd
-from sklearn.preprocessing import LabelEncoder
-from sklearn.ensemble import RandomForestClassifier
+import numpy as np
 import joblib
+import uuid
+from datetime import datetime
+import os
 
-# Initialize Flask app
-app = Flask(__name__)
+app = Flask(__name__, static_folder='static', template_folder='templates')
 
-# Load pre-trained model and label encoders
-model = joblib.load('loan_approval_model.pkl')
-le_education = joblib.load('le_education.pkl')
-le_self_employed = joblib.load('le_self_employed.pkl')
+# Load the loan decision model
+try:
+    model = joblib.load('models/loan_decision_tree_20250518_053250.pkl')
+    print("Model loaded successfully")
+except Exception as e:
+    print(f"Error loading model: {e}")
+    model = None
 
-# Route to display the form
 @app.route('/')
-def index():
+def home():
     return render_template('1.html')
 
-# Route to handle the form submission and prediction
 @app.route('/predict', methods=['POST'])
 def predict():
+    if model is None:
+        return jsonify({'error': 'Model not loaded properly'}), 500
+        
     try:
-        # Get JSON data from the request
         data = request.get_json()
-
-        # Get the individual features from the JSON
-        bank_asset_value = float(data['bank_asset_value'])
-        education = data['education']
-        commercial_assets_value = float(data['commercial_assets_value'])
-        income_annum = float(data['income_annum'])
-        loan_amount = float(data['loan_amount'])
-        luxury_assets_value = float(data['luxury_assets_value'])
-        cibil_score = int(data['cibil_score'])
-        loan_term = int(data['loan_term'])
-        no_of_dependents = int(data['no_of_dependents'])
-        residential_assets_value = float(data['residential_assets_value'])
-        self_employed = data['self_employed']
-
-        # Convert categorical data using label encoders
-        education = le_education.transform([education])[0]
-        self_employed = le_self_employed.transform([self_employed])[0]
-
-        # Prepare the input features for prediction
-        input_features = pd.DataFrame([[bank_asset_value, education, commercial_assets_value, income_annum,
-                                        loan_amount, luxury_assets_value, cibil_score, loan_term,
-                                        no_of_dependents, residential_assets_value, self_employed]],
-                                      columns=['bank_asset_value', 'education', 'commercial_assets_value', 
-                                               'income_annum', 'loan_amount', 'luxury_assets_value', 
-                                               'cibil_score', 'loan_term', 'no_of_dependents', 
-                                               'residential_assets_value', 'self_employed'])
-
+        
+        # Generate a loan ID (timestamp + random string)
+        loan_id = int(datetime.now().strftime('%Y%m%d%H%M%S') + str(uuid.uuid4().int)[:4])
+        
+        # Create DataFrame with the input data
+        input_df = pd.DataFrame({
+            'loan_id': [loan_id],
+            'no_of_dependents': [int(data.get('no_of_dependents', 0))],
+            'education': [f" {data.get('education', 'Graduate')}"],
+            'self_employed': [f" {data.get('self_employed', 'No')}"],
+            'income_annum': [float(data.get('income_annum', 0))],
+            'loan_amount': [float(data.get('loan_amount', 0))],
+            'loan_term': [int(data.get('loan_term', 0))],
+            'cibil_score': [int(data.get('cibil_score', 0))],
+            'residential_assets_value': [float(data.get('residential_assets_value', 0))],
+            'commercial_assets_value': [float(data.get('commercial_assets_value', 0))],
+            'luxury_assets_value': [float(data.get('luxury_assets_value', 0))],
+            'bank_asset_value': [float(data.get('bank_asset_value', 0))]
+        })
+        
         # Make prediction
-        prediction = model.predict(input_features)[0]
+        prediction = model.predict(input_df)
+        prediction_prob = model.predict_proba(input_df)
         
-        # Return result as JSON
-        if prediction == 1:
-            result = "Loan Approved"
-        else:
-            result = "Loan Rejected"
+        # Extract result
+        result = prediction[0]
+        probability = max(prediction_prob[0]) * 100
         
-        return jsonify({'prediction': result})
-
+        # Calculate loan eligibility metrics
+        dti_ratio = float(data.get('loan_amount', 0)) / float(data.get('income_annum', 1)) * 100
+        asset_coverage = (float(data.get('residential_assets_value', 0)) + 
+                          float(data.get('commercial_assets_value', 0)) + 
+                          float(data.get('luxury_assets_value', 0)) + 
+                          float(data.get('bank_asset_value', 0))) / float(data.get('loan_amount', 1))
+        
+        # Create response with additional insights
+        response = {
+            'loan_id': loan_id,
+            'decision': result,
+            'confidence': round(probability, 2),
+            'metrics': {
+                'dti_ratio': round(dti_ratio, 2),
+                'asset_coverage': round(asset_coverage, 2),
+                'credit_score': int(data.get('cibil_score', 0))
+            },
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }
+        
+        return jsonify(response)
+        
     except Exception as e:
-        return jsonify({'error': str(e)})
+        print(f"Error making prediction: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/health')
+def health():
+    return jsonify({'status': 'healthy', 'model_loaded': model is not None})
 
 if __name__ == '__main__':
     app.run(debug=True)
