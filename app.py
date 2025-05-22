@@ -10,7 +10,7 @@ app = Flask(__name__, static_folder='static', template_folder='templates')
 
 # Load the loan decision model
 try:
-    model = joblib.load('models/loan_decision_tree_20250518_053250.pkl')
+    model = joblib.load('models/loan_model (1).pkl')
     print("Model loaded successfully")
 except Exception as e:
     print(f"Error loading model: {e}")
